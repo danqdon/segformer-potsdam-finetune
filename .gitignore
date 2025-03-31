@@ -1,0 +1,7 @@
+# Ignorar todo por defecto
+*
+
+# Pero no ignores estos:
+!.gitignore
+!src/
+!src/**
