@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader
 import evaluate
 from tqdm import tqdm
 import numpy as np
+import csv
 
 from dataset import PotsdamSegmentationDataset, load_data, remap_labels
 from model import load_model, move_model
@@ -59,14 +60,18 @@ if __name__ == "__main__":
     model = move_model(model, device)
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
-    # Now we use our own weighted loss function.
+    # Use our own weighted loss function.
     criterion = nn.CrossEntropyLoss(weight=weights_tensor.to(device))
 
     num_epochs = 50
     checkpoint_interval = 10
-    early_stopping_patience = 4
+    early_stopping_patience = 10
     best_val_miou = -1.0
     epochs_without_improvement = 0
+
+    # Ensure the "metrics" folder exists for saving CSV files.
+    metrics_dir = "metrics"
+    os.makedirs(metrics_dir, exist_ok=True)
 
     for epoch in range(num_epochs):
         print(f"\nEpoch: {epoch}")
@@ -79,7 +84,6 @@ if __name__ == "__main__":
             labels = batch["labels"].to(device)              # shape: [batch, H, W]
             
             optimizer.zero_grad()
-            # Do not pass labels to model here since we want to compute loss manually.
             outputs = model(pixel_values=pixel_values)
             logits = outputs.logits  # shape: [batch, num_labels, H', W']
 
@@ -103,7 +107,6 @@ if __name__ == "__main__":
         # Validation loop
         model.eval()
         val_epoch_loss = 0.0
-        # Reinitialize the metric for validation (since .reset() is not available).
         val_metric = evaluate.load("mean_iou")
         with torch.no_grad():
             for idx, batch in enumerate(tqdm(valid_dataloader, desc="Validation")):
@@ -131,6 +134,12 @@ if __name__ == "__main__":
         val_miou = computed_metrics.get("mean_iou", 0)
         val_acc = computed_metrics.get("mean_accuracy", 0)
         print(f"Validation Loss: {avg_val_loss:.4f} - mIoU: {val_miou:.4f} - Acc: {val_acc:.4f}")
+        
+        # Print per-class IoU if available (assuming computed_metrics["per_category_iou"] is an array)
+        if "per_category_iou" in computed_metrics:
+            print("Per-class IoU:")
+            for i, iou in enumerate(computed_metrics["per_category_iou"]):
+                print(f"  Class {i}: IoU = {iou:.4f}")
 
         # Checkpointing: save model every checkpoint_interval epochs.
         if (epoch + 1) % checkpoint_interval == 0:
@@ -145,6 +154,16 @@ if __name__ == "__main__":
             best_model_path = "segformer_best.pt"
             torch.save(model.state_dict(), best_model_path)
             print(f"New best mIoU: {val_miou:.4f} -> saved best model checkpoint to {best_model_path}")
+            # Save a CSV with the current best metrics.
+            csv_path = os.path.join(metrics_dir, "best_metrics.csv")
+            header = ["epoch", "mIoU", "accuracy"] + [f"class_{i}_iou" for i in range(num_labels)]
+            row = [epoch+1, val_miou, val_acc] + list(computed_metrics.get("per_category_iou", []))
+            with open(csv_path, "w", newline="") as csvfile:
+                import csv
+                writer = csv.writer(csvfile)
+                writer.writerow(header)
+                writer.writerow(row)
+            print(f"Saved best metrics to {csv_path}")
         else:
             epochs_without_improvement += 1
             print(f"No improvement for {epochs_without_improvement} epoch(s).")
@@ -152,7 +171,7 @@ if __name__ == "__main__":
                 print(f"Early stopping triggered after {epoch+1} epochs.")
                 break
 
-    # Load the best model before saving
+    # Load the best model before saving final model.
     model.load_state_dict(torch.load("segformer_best.pt"))
     model.save_pretrained("segformer_potsdam_finetuned")
     print("Saved best model as final model in segformer_potsdam_finetuned")

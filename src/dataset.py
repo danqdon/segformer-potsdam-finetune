@@ -20,7 +20,7 @@ class PotsdamSegmentationDataset(Dataset):
     def __len__(self):
         return len(self.df)
     
-    def __getitem__(self, idx):
+    def __getitem__(self, idx): #TODO extend for any combination of bands
         row = self.df.iloc[idx]
         image = Image.open(row["image"]).convert("RGB")
         label = Image.open(row["label"]).convert("L")
