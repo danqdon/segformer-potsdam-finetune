@@ -1,4 +1,3 @@
-# src/eval_results.py
 import os
 import torch
 import numpy as np
@@ -12,7 +11,7 @@ from pathlib import Path
 import collections.abc
 
 import config
-from model import move_model_to_device # No need for load_model here typically
+from model import move_model_to_device
 from utils import map_pixel_values_to_class_indices
 
 
@@ -30,7 +29,7 @@ def parse_evaluation_arguments():
         help="Number of validation samples to visualize."
     )
     parser.add_argument(
-        "--val-csv", type=str, default=str(config.PROCESSED_VAL_CSV_PATH),
+        "--val-csv", type=str, default=str(config.PROCESSED_DATA_VAL_CSV_PATH),
         help="Path to the processed validation CSV file."
     )
     parser.add_argument(
@@ -137,6 +136,7 @@ def run_evaluation_and_visualization(arguments):
     num_classes = config.NUM_CLASSES
     color_palette = config.VISUALIZATION_PALETTE
     class_names_map = config.CLASS_INDEX_TO_NAME
+    channel_indices = config.INPUT_CHANNEL_INDICES
 
     for i in range(num_samples_to_process):
         logging.info(f"\n--- Processing Sample {i+1}/{num_samples_to_process} ---")
@@ -150,16 +150,33 @@ def run_evaluation_and_visualization(arguments):
                 logging.warning(f"Skipping sample {i} due to missing file: {image_file_path} or {label_file_path}")
                 continue
 
-            input_image = Image.open(image_file_path).convert("RGB")
+            image_original = Image.open(image_file_path)
+            image_np = np.array(image_original)
+
+            if image_np.ndim != 3:
+                 raise ValueError(f"Image at {image_file_path} does not have 3 dimensions (H, W, C), shape is {image_np.shape}")
+            num_original_channels = image_np.shape[2]
+            if max(channel_indices) >= num_original_channels:
+                 raise ValueError(f"Image at {image_file_path} has {num_original_channels} channels,"
+                                  f" but requested index {max(channel_indices)} is out of bounds.")
+
+            try:
+                 selected_channels_np = image_np[:, :, channel_indices]
+            except IndexError as e:
+                 raise IndexError(f"Error selecting channels {channel_indices} from image {image_file_path} "
+                                  f"with shape {image_np.shape}: {e}") from e
+
+            if not selected_channels_np.flags['C_CONTIGUOUS']:
+                selected_channels_np = np.ascontiguousarray(selected_channels_np)
+            input_image = Image.fromarray(selected_channels_np)
+
             ground_truth_label_image = Image.open(label_file_path).convert("L")
             ground_truth_pixels_original = np.array(ground_truth_label_image).astype(np.int32)
-
             ground_truth_indices = map_pixel_values_to_class_indices(ground_truth_pixels_original, label_mapping)
 
             if arguments.debug_prints:
                  logging.info(f"Original unique values in GT label: {np.unique(ground_truth_pixels_original)}")
                  logging.info(f"Remapped unique values in GT label: {np.unique(ground_truth_indices)}")
-
 
             model_inputs = image_processor(images=input_image, return_tensors="pt")
             model_inputs = {k: v.to(config.DEVICE) for k, v in model_inputs.items()}
@@ -188,10 +205,9 @@ def run_evaluation_and_visualization(arguments):
             prediction_overlay = create_segmentation_overlay(input_image, predicted_class_indices, color_palette)
             ground_truth_overlay = create_segmentation_overlay(input_image, ground_truth_indices, color_palette)
 
-
             fig, axes = plt.subplots(1, 3, figsize=(18, 6))
             axes[0].imshow(input_image)
-            axes[0].set_title("Original Image")
+            axes[0].set_title("Input Image (Selected Channels)")
             axes[0].axis("off")
             axes[1].imshow(ground_truth_overlay)
             axes[1].set_title("Ground Truth Segmentation")
@@ -212,6 +228,9 @@ def run_evaluation_and_visualization(arguments):
 
         except FileNotFoundError as e:
              logging.error(f"File not found during evaluation of sample {i}: {e}")
+        except (ValueError, IndexError) as e:
+            image_name = image_file_path.name if image_file_path else "Unknown"
+            logging.error(f"Error processing channels for sample {i} ({image_name}): {e}")
         except Exception as e:
             image_name = image_file_path.name if image_file_path else "Unknown"
             logging.error(f"An error occurred processing sample {i} ({image_name}): {e}", exc_info=True)
