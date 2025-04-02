@@ -1,3 +1,4 @@
+# src/eval_results.py
 import os
 import torch
 import numpy as np
@@ -5,121 +6,219 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from PIL import Image
 from transformers import SegformerForSemanticSegmentation, SegformerImageProcessor
-from model import load_model, move_model
-from utils import remap_labels
+import argparse
+import logging
+from pathlib import Path
+import collections.abc
 
-def visualize_segmentation(image, seg_map, palette):
-    h, w = seg_map.shape
-    color_seg = np.zeros((h, w, 3), dtype=np.uint8)
-    for label, color in enumerate(palette):
-        color_seg[seg_map == label] = color
-    overlay = (np.array(image).astype(np.float32) * 0.5 + color_seg.astype(np.float32) * 0.5).astype(np.uint8)
-    return overlay
+import config
+from model import move_model_to_device # No need for load_model here typically
+from utils import map_pixel_values_to_class_indices
 
-def compute_class_distribution(seg_map, num_classes):
-    total_pixels = seg_map.size
-    percentages = {}
-    for cls in range(num_classes):
-        count = np.sum(seg_map == cls)
-        percentages[cls] = 100 * count / total_pixels
-    return percentages
 
-def print_class_distribution(distribution, title):
-    print(f"{title} (class %):")
-    for cls, perc in distribution.items():
-        print(f"  Class {cls}: {perc:.2f}%")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+def parse_evaluation_arguments():
+    parser = argparse.ArgumentParser(description="Evaluate SegFormer model and visualize results.")
+    parser.add_argument(
+        "--model-path", type=str, default=str(config.FINAL_MODEL_PATH),
+        help="Path to the trained model directory (Hugging Face format)."
+    )
+    parser.add_argument(
+        "--num-samples", type=int, default=config.NUM_EVALUATION_SAMPLES_TO_VISUALIZE,
+        help="Number of validation samples to visualize."
+    )
+    parser.add_argument(
+        "--val-csv", type=str, default=str(config.PROCESSED_VAL_CSV_PATH),
+        help="Path to the processed validation CSV file."
+    )
+    parser.add_argument(
+        "--results-dir", type=str, default=str(config.EVALUATION_RESULTS_DIR),
+        help="Directory to save evaluation figures."
+    )
+    parser.add_argument(
+        "--debug-prints", action='store_true',
+        help="Enable detailed printing of unique values."
+    )
+    return parser.parse_args()
+
+
+def create_segmentation_overlay(image, segmentation_map, color_palette):
+    if not isinstance(image, Image.Image):
+        image = Image.fromarray(image)
+    if not isinstance(segmentation_map, np.ndarray):
+         segmentation_map = np.array(segmentation_map)
+
+    map_height, map_width = segmentation_map.shape
+    color_segmentation = np.zeros((map_height, map_width, 3), dtype=np.uint8)
+    for class_index, color in enumerate(color_palette):
+        if class_index < len(color_palette):
+             color_segmentation[segmentation_map == class_index] = color
+        else:
+             logging.warning(f"Label index {class_index} out of bounds for palette size {len(color_palette)}.")
+
+    image_np = np.array(image.convert("RGB")).astype(np.float32)
+    color_segmentation_np = color_segmentation.astype(np.float32)
+
+    overlay = (image_np * 0.6 + color_segmentation_np * 0.4).astype(np.uint8)
+    return Image.fromarray(overlay)
+
+def compute_class_pixel_distribution(segmentation_map, number_of_classes):
+    total_pixels = segmentation_map.size
+    if total_pixels == 0:
+        return {cls_idx: 0.0 for cls_idx in range(number_of_classes)}
+
+    class_percentages = {}
+    unique_labels, counts = np.unique(segmentation_map, return_counts=True)
+    counts_dict = dict(zip(unique_labels, counts))
+
+    for cls_idx in range(number_of_classes):
+        count = counts_dict.get(cls_idx, 0)
+        percentages = (100.0 * count / total_pixels) if total_pixels > 0 else 0.0
+        class_percentages[cls_idx] = percentages
+    return class_percentages
+
+
+def log_class_distribution(distribution_dict, title_prefix, class_index_to_name_map):
+    logging.info(f"{title_prefix} (class %):")
+    if not class_index_to_name_map:
+        class_index_to_name_map = {}
+        logging.warning("Class index to name map not provided for logging distribution.")
+
+    max_len = max(len(name) for name in class_index_to_name_map.values()) if class_index_to_name_map else 10
+
+    for class_index, percentage in distribution_dict.items():
+        class_name = class_index_to_name_map.get(class_index, f"Unknown Index {class_index}")
+        logging.info(f"  {class_name:<{max_len}} (Index {class_index}): {percentage:>6.2f}%")
     print("")
 
-def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Using device:", device)
-    
-    label_mapping = {29: 0, 76: 1, 150: 2, 179: 3, 226: 4, 255: 5}
-    num_labels = 6
-    original_values = sorted(label_mapping.keys())
-    id2label = {i: str(val) for i, val in enumerate(original_values)}
-    label2id = {v: k for k, v in id2label.items()}
 
-    model_path = "segformer_potsdam_finetuned"
-    model = load_model(num_labels, id2label, label2id)
-    model = move_model(model, device)
-    model.eval()
+def run_evaluation_and_visualization(arguments):
+    logging.info("Starting evaluation process...")
+    logging.info(f"Using device: {config.DEVICE}")
+    logging.info(f"Loading model from: {arguments.model_path}")
+    logging.info(f"Visualizing {arguments.num_samples} samples.")
 
-    processor = SegformerImageProcessor.from_pretrained(
-        "nvidia/segformer-b0-finetuned-ade-512-512",
-        do_reduce_labels=False
-    )
+    try:
+        model = SegformerForSemanticSegmentation.from_pretrained(arguments.model_path)
+        image_processor = SegformerImageProcessor.from_pretrained(arguments.model_path)
+        model = move_model_to_device(model, config.DEVICE)
+        model.eval()
+        logging.info("Model and processor loaded successfully.")
+    except Exception as e:
+        logging.error(f"Failed to load model or processor from {arguments.model_path}: {e}")
+        return
 
-    palette = [
-        [128, 64, 128],
-        [244, 35, 232],
-        [70, 70, 70],
-        [102, 102, 156],
-        [190, 153, 153],
-        [153, 153, 153],
-    ]
-    
-    base_dir = "/home/dquinteiro/Documentos/VSCodeProjects/SegFormer/ISPRS_Potsdam/ISPRS-Potsdam"
-    val_csv = os.path.join(base_dir, "split_postdam_ir_512/validation/processed_images_labels.csv")
-    val_df = pd.read_csv(val_csv)
+    val_csv_path = Path(arguments.val_csv)
+    if not val_csv_path.exists():
+        logging.error(f"Validation CSV not found: {val_csv_path}. Run preprocess.py.")
+        return
+    try:
+        validation_dataframe = pd.read_csv(val_csv_path)
+        logging.info(f"Loaded {len(validation_dataframe)} validation samples from {val_csv_path}")
+    except Exception as e:
+        logging.error(f"Failed to load validation CSV {val_csv_path}: {e}")
+        return
 
-    results_dir = "/home/dquinteiro/Documentos/VSCodeProjects/SegFormer/results"
-    os.makedirs(results_dir, exist_ok=True)
+    num_samples_to_process = arguments.num_samples
+    if num_samples_to_process > len(validation_dataframe):
+         logging.warning(f"Requested {num_samples_to_process} samples, but only {len(validation_dataframe)} available. Evaluating all.")
+         num_samples_to_process = len(validation_dataframe)
+    elif num_samples_to_process <= 0:
+         logging.error("Number of samples must be positive.")
+         return
 
-    for i in range(5):
-        sample_row = val_df.iloc[i]
-        test_image_path = sample_row["image"]
-        test_label_path = sample_row["label"]
-        
-        image = Image.open(test_image_path).convert("RGB")
-        label = Image.open(test_label_path).convert("L")
-        label_np = np.array(label).astype(np.int32)
-        print("Valores únicos originales:", np.unique(label_np))
-        gt_remapped = remap_labels(label_np, label_mapping)
-        print("Valores únicos remapeados:", np.unique(gt_remapped))
 
-        
-        inputs = processor(image, return_tensors="pt")
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-        
-        with torch.no_grad():
-            outputs = model(**inputs)
-        logits = outputs.logits
-        upsampled_logits = torch.nn.functional.interpolate(
-            logits, size=image.size[::-1], mode="bilinear", align_corners=False
-        )
-        
-        predicted = upsampled_logits.argmax(dim=1).squeeze(0).cpu().numpy()
-        print("Valores únicos en la predicción:", np.unique(predicted))
+    results_output_dir = Path(arguments.results_dir)
+    results_output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Print class distributions
-        gt_dist = compute_class_distribution(gt_remapped, num_labels)
-        pred_dist = compute_class_distribution(predicted, num_labels)
-        print(f"\nImage {i}: {os.path.basename(test_image_path)}")
-        print_class_distribution(gt_dist, "Ground Truth")
-        print_class_distribution(pred_dist, "Prediction")
+    label_mapping = config.ORIGINAL_PIXEL_TO_CLASS_INDEX
+    num_classes = config.NUM_CLASSES
+    color_palette = config.VISUALIZATION_PALETTE
+    class_names_map = config.CLASS_INDEX_TO_NAME
 
-        # Visualizations
-        pred_overlay = visualize_segmentation(image, predicted, palette)
-        gt_overlay = visualize_segmentation(image, gt_remapped, palette)
-        
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-        axes[0].imshow(image)
-        axes[0].set_title("Original Image")
-        axes[0].axis("off")
-        
-        axes[1].imshow(gt_overlay)
-        axes[1].set_title("Ground Truth Segmentation")
-        axes[1].axis("off")
-        
-        axes[2].imshow(pred_overlay)
-        axes[2].set_title("Predicted Segmentation")
-        axes[2].axis("off")
-        
-        output_path = os.path.join(results_dir, f"evaluation_sample_{i}.png")
-        plt.savefig(output_path, bbox_inches="tight")
-        print(f"Saved evaluation figure to {output_path}")
-        plt.close(fig)
+    for i in range(num_samples_to_process):
+        logging.info(f"\n--- Processing Sample {i+1}/{num_samples_to_process} ---")
+        image_file_path = None
+        try:
+            sample_data_row = validation_dataframe.iloc[i]
+            image_file_path = Path(sample_data_row["image"])
+            label_file_path = Path(sample_data_row["label"])
+
+            if not image_file_path.exists() or not label_file_path.exists():
+                logging.warning(f"Skipping sample {i} due to missing file: {image_file_path} or {label_file_path}")
+                continue
+
+            input_image = Image.open(image_file_path).convert("RGB")
+            ground_truth_label_image = Image.open(label_file_path).convert("L")
+            ground_truth_pixels_original = np.array(ground_truth_label_image).astype(np.int32)
+
+            ground_truth_indices = map_pixel_values_to_class_indices(ground_truth_pixels_original, label_mapping)
+
+            if arguments.debug_prints:
+                 logging.info(f"Original unique values in GT label: {np.unique(ground_truth_pixels_original)}")
+                 logging.info(f"Remapped unique values in GT label: {np.unique(ground_truth_indices)}")
+
+
+            model_inputs = image_processor(images=input_image, return_tensors="pt")
+            model_inputs = {k: v.to(config.DEVICE) for k, v in model_inputs.items()}
+
+            with torch.no_grad():
+                outputs = model(**model_inputs)
+                output_logits = outputs.logits
+                upsampled_logits = torch.nn.functional.interpolate(
+                    output_logits,
+                    size=input_image.size[::-1],
+                    mode="bilinear",
+                    align_corners=False
+                )
+                predicted_class_indices = upsampled_logits.argmax(dim=1).squeeze(0).cpu().numpy()
+
+            if arguments.debug_prints:
+                logging.info(f"Unique values in prediction: {np.unique(predicted_class_indices)}")
+
+            ground_truth_distribution = compute_class_pixel_distribution(ground_truth_indices, num_classes)
+            prediction_distribution = compute_class_pixel_distribution(predicted_class_indices, num_classes)
+
+            logging.info(f"\nImage {i}: {image_file_path.name}")
+            log_class_distribution(ground_truth_distribution, "Ground Truth", class_names_map)
+            log_class_distribution(prediction_distribution, "Prediction", class_names_map)
+
+            prediction_overlay = create_segmentation_overlay(input_image, predicted_class_indices, color_palette)
+            ground_truth_overlay = create_segmentation_overlay(input_image, ground_truth_indices, color_palette)
+
+
+            fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+            axes[0].imshow(input_image)
+            axes[0].set_title("Original Image")
+            axes[0].axis("off")
+            axes[1].imshow(ground_truth_overlay)
+            axes[1].set_title("Ground Truth Segmentation")
+            axes[1].axis("off")
+            axes[2].imshow(prediction_overlay)
+            axes[2].set_title("Predicted Segmentation")
+            axes[2].axis("off")
+            plt.tight_layout()
+
+            output_figure_filename = f"evaluation_sample_{i}_{image_file_path.stem}.png"
+            output_figure_path = results_output_dir / output_figure_filename
+            try:
+                plt.savefig(output_figure_path, bbox_inches="tight")
+                logging.info(f"Saved evaluation figure to {output_figure_path}")
+            except Exception as e:
+                logging.error(f"Failed to save figure {output_figure_path}: {e}")
+            plt.close(fig)
+
+        except FileNotFoundError as e:
+             logging.error(f"File not found during evaluation of sample {i}: {e}")
+        except Exception as e:
+            image_name = image_file_path.name if image_file_path else "Unknown"
+            logging.error(f"An error occurred processing sample {i} ({image_name}): {e}", exc_info=True)
+
+    logging.info("Evaluation finished.")
+
 
 if __name__ == "__main__":
-    main()
+    cli_args = parse_evaluation_arguments()
+    run_evaluation_and_visualization(cli_args)

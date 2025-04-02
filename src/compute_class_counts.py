@@ -1,45 +1,65 @@
+# src/compute_class_counts.py
 import os
 import json
 import numpy as np
 from PIL import Image
 from glob import glob
+import logging
+from pathlib import Path
+import config
 
-def count_pixels_in_label(label_path):
-    """
-    Opens a label image (assumed to be a TIFF), converts it to grayscale ('L'),
-    and returns a dictionary with unique pixel values and their counts.
-    """
-    label = Image.open(label_path).convert("L")
-    label_np = np.array(label).astype(np.int32)
-    unique, counts = np.unique(label_np, return_counts=True)
-    return dict(zip(unique.tolist(), counts.tolist()))
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def compute_global_counts(labels_dir):
-    """
-    Scans all TIFF files in the provided directory, counts pixels per unique value,
-    and returns a global count dictionary.
-    """
-    file_list = glob(os.path.join(labels_dir, "*.tiff"))
-    global_counts = {}
-    for file in file_list:
-        counts = count_pixels_in_label(file)
-        for value, cnt in counts.items():
-            global_counts[value] = global_counts.get(value, 0) + cnt
-    return global_counts
+def count_pixels_per_value_in_label(label_file_path):
+    try:
+        label_image = Image.open(label_file_path).convert("L")
+        label_pixels_np = np.array(label_image).astype(np.int32)
+        unique_values, counts = np.unique(label_pixels_np, return_counts=True)
+        return dict(zip(unique_values.tolist(), counts.tolist()))
+    except FileNotFoundError:
+        logging.warning(f"Label file not found: {label_file_path}. Skipping.")
+        return {}
+    except Exception as e:
+        logging.error(f"Error processing label file {label_file_path}: {e}")
+        return {}
+
+def compute_global_pixel_counts(processed_labels_directory):
+    logging.info(f"Scanning processed label files in: {processed_labels_directory}")
+    label_dir_path = Path(processed_labels_directory)
+    if not label_dir_path.is_dir():
+        logging.error(f"Processed labels directory not found: {processed_labels_directory}")
+        return {}
+
+    label_file_paths = list(label_dir_path.glob("*.tiff")) + list(label_dir_path.glob("*.png"))
+    logging.info(f"Found {len(label_file_paths)} label files to process.")
+
+    global_pixel_counts = {}
+    for file_path in label_file_paths:
+        pixel_counts = count_pixels_per_value_in_label(file_path)
+        for pixel_value, count in pixel_counts.items():
+            int_pixel_value = int(pixel_value)
+            global_pixel_counts[int_pixel_value] = global_pixel_counts.get(int_pixel_value, 0) + count
+
+    logging.info(f"Finished counting. Original pixel value counts: {global_pixel_counts}")
+    return global_pixel_counts
 
 def main():
-    # Hardcoded directory containing your processed training label TIFF files
-    labels_dir = "/home/dquinteiro/Documentos/VSCodeProjects/SegFormer/ISPRS_Potsdam/ISPRS-Potsdam/processed_train_labels"
-    global_counts = compute_global_counts(labels_dir)
-    print("Global counts:", global_counts)
-    
-    # Save the computed counts as a JSON file in the same directory as src.
-    # This file will be created in the src folder.
-    src_dir = os.path.dirname(os.path.abspath(__file__))
-    output_path = os.path.join(src_dir, "global_counts.json")
-    with open(output_path, "w") as f:
-        json.dump(global_counts, f)
-    print(f"Saved global counts to {output_path}")
+    processed_labels_dir = config.PROCESSED_TRAIN_LBL_DIR
+    global_counts = compute_global_pixel_counts(processed_labels_dir)
+
+    if not global_counts:
+        logging.error("No pixel counts generated. Did preprocessing run? Is the directory correct?")
+        return
+
+    global_counts_string_keys = {str(k): v for k, v in global_counts.items()}
+
+    output_json_path = config.GLOBAL_PIXEL_COUNTS_JSON_PATH
+    try:
+        with open(output_json_path, "w") as f:
+            json.dump(global_counts_string_keys, f, indent=4)
+        logging.info(f"Saved global counts (original values) to {output_json_path}")
+    except Exception as e:
+        logging.error(f"Failed to save global counts to {output_json_path}: {e}")
 
 if __name__ == "__main__":
     main()

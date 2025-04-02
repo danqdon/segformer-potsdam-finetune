@@ -1,107 +1,93 @@
-import os
+# src/dataset.py
+import collections
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from PIL import Image
+import torch
 from torch.utils.data import Dataset
 from transformers import SegformerImageProcessor
-from utils import remap_labels
+import logging
+# Make sure this import uses the corrected function name if you changed it
+from utils import map_pixel_values_to_class_indices
+import config
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class PotsdamSegmentationDataset(Dataset):
-    def __init__(self, df, transform=None):
-        """
-        Args:
-            df (pd.DataFrame): A DataFrame with columns "image" and "label" (absolute paths).
-            transform: A function to transform (image, label) pair.
-        """
-        self.df = df
-        self.transform = transform
-        
+    def __init__(self, dataframe_with_paths, transform_function=None):
+        self.dataframe = dataframe_with_paths
+        self.transform = transform_function
+        logging.info(f"Initialized dataset with {len(self.dataframe)} samples.")
+
     def __len__(self):
-        return len(self.df)
-    
-    def __getitem__(self, idx): #TODO extend for any combination of bands
-        row = self.df.iloc[idx]
-        image = Image.open(row["image"]).convert("RGB")
-        label = Image.open(row["label"]).convert("L")
+        return len(self.dataframe)
+
+    def __getitem__(self, index):
+        # ... (loading image/label remains the same)
+        if torch.is_tensor(index):
+            index = index.tolist()
+
+        data_row = self.dataframe.iloc[index]
+        image_path = data_row["image"]
+        label_path = data_row["label"]
+
+        try:
+            image = Image.open(image_path).convert("RGB")
+            label = Image.open(label_path).convert("L")
+        except FileNotFoundError as e:
+            logging.error(f"Error loading file: {e}. Ensure preprocessing was run.")
+            raise FileNotFoundError(f"Cannot find file {image_path} or {label_path}. Did you run preprocess.py?") from e
+        except Exception as e:
+            logging.error(f"Error opening image/label at index {index} ({image_path}, {label_path}): {e}")
+            raise RuntimeError(f"Failed to load sample {index}") from e
+
+
         if self.transform:
-            processed = self.transform(image, label)
-            # We only keep "pixel_values" and "labels" (squeeze out the batch dim added by the processor)
-            processed = {k: v.squeeze(0) for k, v in processed.items() if k in ["pixel_values", "labels"]}
-            return processed
+            processed_data = self.transform(image, label)
+
+            # --- Modified Check ---
+            # Check if the returned object is dict-like AND has the required keys
+            if isinstance(processed_data, collections.abc.Mapping) and \
+               "pixel_values" in processed_data and \
+               "labels" in processed_data:
+                 # Now we are confident it has the keys, proceed
+                 # Ensure the values are tensors (optional extra check here, but should be guaranteed by transform)
+                 if isinstance(processed_data["pixel_values"], torch.Tensor) and \
+                    isinstance(processed_data["labels"], torch.Tensor):
+                     return processed_data # Return the dict-like object (dict or BatchFeature)
+                 else:
+                     # This case indicates the transform returned the right keys but wrong types
+                     logging.error(f"Transform function for index {index} returned correct keys but wrong value types:"
+                                   f" pixel_values={type(processed_data.get('pixel_values'))}, labels={type(processed_data.get('labels'))}")
+                     raise TypeError(f"Transform function failed for index {index}: Incorrect value types.")
+            else:
+                # Handle cases where transform returned None or a non-mapping object, or mapping missing keys
+                logging.error(f"Transform function failed for index {index}. Expected dict-like with 'pixel_values' and 'labels', got: {type(processed_data)}")
+                raise TypeError(f"Transform function failed for index {index}. Check transform function and processor behavior.")
+                # --- End Modified Check ---
+
         else:
-            return {"image": image, "label": label}
+             # If no transform is provided
+             return {"image": image, "label": label}
 
-def process_images_in_dataframe(df, col, output_dir):
-    """Convert images to RGB (if they have 4 channels) and save them in output_dir."""
-    os.makedirs(output_dir, exist_ok=True)
-    new_paths = []
-    for path in df[col]:
-        img = Image.open(path)
-        if len(img.getbands()) == 4:
-            img = img.convert("RGB")
-        new_path = os.path.join(output_dir, os.path.basename(path))
-        img.save(new_path)
-        new_paths.append(new_path)
-    df[col] = new_paths
-    return df
 
-def process_labels_in_dataframe(df, col, output_dir):
-    """Convert segmentation maps to mode 'L' (1 channel) and save them in output_dir."""
-    os.makedirs(output_dir, exist_ok=True)
-    new_paths = []
-    for path in df[col]:
-        mask = Image.open(path)
-        if mask.mode != "L":
-            mask = mask.convert("L")
-        new_path = os.path.join(output_dir, os.path.basename(path))
-        mask.save(new_path)
-        new_paths.append(new_path)
-    df[col] = new_paths
-    return df
+def load_processed_data_paths():
+    train_csv_path = config.PROCESSED_TRAIN_CSV_PATH
+    val_csv_path = config.PROCESSED_VAL_CSV_PATH
 
-def load_data(base_dir):
-    """
-    Loads the train and validation CSV files, updates paths, and applies processing.
-    Returns two DataFrames: train_df and validation_df.
-    """
-    base_dir = Path(base_dir)
-    train_images_csv = base_dir / "split_postdam_ir_512/train/images.csv"
-    train_labels_csv = base_dir / "split_postdam_ir_512/train/labels.csv"
-    val_images_csv = base_dir / "split_postdam_ir_512/validation/images.csv"
-    val_labels_csv = base_dir / "split_postdam_ir_512/validation/labels.csv"
+    if not train_csv_path.exists() or not val_csv_path.exists():
+        message = (f"Processed CSV files not found at {train_csv_path} or {val_csv_path}. "
+                   "Please run src/preprocess.py first.")
+        logging.error(message)
+        raise FileNotFoundError(message)
 
-    train_images_df = pd.read_csv(train_images_csv)
-    train_labels_df = pd.read_csv(train_labels_csv)
-    val_images_df = pd.read_csv(val_images_csv)
-    val_labels_df = pd.read_csv(val_labels_csv)
-
-    train_images_df["image"] = train_images_df["images"].apply(lambda x: str(base_dir / x))
-    train_labels_df["label"] = train_labels_df["labels"].apply(lambda x: str(base_dir / x))
-    val_images_df["image"] = val_images_df["images"].apply(lambda x: str(base_dir / x))
-    val_labels_df["label"] = val_labels_df["labels"].apply(lambda x: str(base_dir / x))
-
-    processed_train_img_dir = str(base_dir / "processed_train_images")
-    processed_val_img_dir = str(base_dir / "processed_val_images")
-    processed_train_lbl_dir = str(base_dir / "processed_train_labels")
-    processed_val_lbl_dir = str(base_dir / "processed_val_labels")
-
-    train_images_df = process_images_in_dataframe(train_images_df, "image", processed_train_img_dir)
-    val_images_df = process_images_in_dataframe(val_images_df, "image", processed_val_img_dir)
-    train_labels_df = process_labels_in_dataframe(train_labels_df, "label", processed_train_lbl_dir)
-    val_labels_df = process_labels_in_dataframe(val_labels_df, "label", processed_val_lbl_dir)
-
-    train_df = pd.DataFrame({
-        "image": train_images_df["image"],
-        "label": train_labels_df["label"]
-    })
-    validation_df = pd.DataFrame({
-        "image": val_images_df["image"],
-        "label": val_labels_df["label"]
-    })
-
-    # Optionally, save processed CSVs
-    train_df.to_csv(base_dir / "split_postdam_ir_512/train/processed_images_labels.csv", index=False)
-    validation_df.to_csv(base_dir / "split_postdam_ir_512/validation/processed_images_labels.csv", index=False)
-
-    return train_df, validation_df
+    try:
+        train_dataframe = pd.read_csv(train_csv_path)
+        validation_dataframe = pd.read_csv(val_csv_path)
+        logging.info(f"Loaded {len(train_dataframe)} training samples from {train_csv_path}")
+        logging.info(f"Loaded {len(validation_dataframe)} validation samples from {val_csv_path}")
+        return train_dataframe, validation_dataframe
+    except Exception as e:
+        logging.error(f"Failed to load processed CSV files: {e}")
+        raise
