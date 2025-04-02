@@ -1,6 +1,7 @@
 # src/preprocess.py
 import os
 import pandas as pd
+import numpy as np
 from PIL import Image
 from tqdm import tqdm
 import logging
@@ -9,14 +10,19 @@ import config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def convert_image_to_rgb_and_save(input_path, output_path):
+def process_image_channels(input_path, output_path, channels):
     try:
         img = Image.open(input_path)
-        if img.mode == 'RGBA' or len(img.getbands()) == 4:
-            img = img.convert("RGB")
-        elif img.mode != 'RGB':
-             img = img.convert("RGB")
-        img.save(output_path)
+        img_arr = np.array(img)
+        if img_arr.ndim == 3 and img_arr.shape[2] >= max(channels) + 1:
+            # Select the desired channels.
+            # If channels are [0, 1, 2], the result is equivalent to an RGB image.
+            selected_arr = img_arr[..., channels]
+            processed_img = Image.fromarray(selected_arr)
+        else:
+            logging.warning(f"Image at {input_path} does not have enough channels. Converting to RGB.")
+            processed_img = img.convert("RGB")
+        processed_img.save(output_path)
         return str(output_path)
     except Exception as e:
         logging.error(f"Failed to process image {input_path}: {e}")
@@ -55,7 +61,7 @@ def run_dataset_preprocessing(image_csv_path, label_csv_path, image_col_name, la
     for _, row in tqdm(images_df.iterrows(), total=len(images_df), desc="Processing Images"):
         in_path = row['absolute_path']
         out_path = output_img_dir / in_path.name
-        processed_path = convert_image_to_rgb_and_save(in_path, out_path)
+        processed_path = process_image_channels(in_path, out_path, config.CHANNELS_TO_USE)
         processed_image_paths.append(processed_path if processed_path else None)
 
     processed_label_paths = []
@@ -84,7 +90,6 @@ def run_dataset_preprocessing(image_csv_path, label_csv_path, image_col_name, la
         logging.error(f"Failed to save processed CSV {output_combined_csv_path}: {e}")
 
     logging.info("Preprocessing finished.")
-
 
 if __name__ == "__main__":
     logging.info("--- Running Preprocessing for Training Data ---")

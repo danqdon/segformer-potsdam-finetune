@@ -6,11 +6,11 @@ from pathlib import Path
 from PIL import Image
 import torch
 from torch.utils.data import Dataset
-from transformers import SegformerImageProcessor
 import logging
-# Make sure this import uses the corrected function name if you changed it
-from utils import map_pixel_values_to_class_indices
 import config
+
+# Import the mapping utility.
+from utils import map_pixel_values_to_class_indices
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -24,7 +24,6 @@ class PotsdamSegmentationDataset(Dataset):
         return len(self.dataframe)
 
     def __getitem__(self, index):
-        # ... (loading image/label remains the same)
         if torch.is_tensor(index):
             index = index.tolist()
 
@@ -33,7 +32,8 @@ class PotsdamSegmentationDataset(Dataset):
         label_path = data_row["label"]
 
         try:
-            image = Image.open(image_path).convert("RGB")
+            # Load image without forcing conversion to RGB.
+            image = Image.open(image_path)
             label = Image.open(label_path).convert("L")
         except FileNotFoundError as e:
             logging.error(f"Error loading file: {e}. Ensure preprocessing was run.")
@@ -42,35 +42,31 @@ class PotsdamSegmentationDataset(Dataset):
             logging.error(f"Error opening image/label at index {index} ({image_path}, {label_path}): {e}")
             raise RuntimeError(f"Failed to load sample {index}") from e
 
-
         if self.transform:
             processed_data = self.transform(image, label)
-
-            # --- Modified Check ---
-            # Check if the returned object is dict-like AND has the required keys
+            # Check if the returned object is dict-like and contains the expected keys.
             if isinstance(processed_data, collections.abc.Mapping) and \
                "pixel_values" in processed_data and \
                "labels" in processed_data:
-                 # Now we are confident it has the keys, proceed
-                 # Ensure the values are tensors (optional extra check here, but should be guaranteed by transform)
                  if isinstance(processed_data["pixel_values"], torch.Tensor) and \
                     isinstance(processed_data["labels"], torch.Tensor):
-                     return processed_data # Return the dict-like object (dict or BatchFeature)
+                     return processed_data
                  else:
-                     # This case indicates the transform returned the right keys but wrong types
-                     logging.error(f"Transform function for index {index} returned correct keys but wrong value types:"
-                                   f" pixel_values={type(processed_data.get('pixel_values'))}, labels={type(processed_data.get('labels'))}")
+                     logging.error(f"Transform for index {index} returned correct keys but wrong value types: "
+                                   f"pixel_values={type(processed_data.get('pixel_values'))}, labels={type(processed_data.get('labels'))}")
                      raise TypeError(f"Transform function failed for index {index}: Incorrect value types.")
             else:
-                # Handle cases where transform returned None or a non-mapping object, or mapping missing keys
-                logging.error(f"Transform function failed for index {index}. Expected dict-like with 'pixel_values' and 'labels', got: {type(processed_data)}")
-                raise TypeError(f"Transform function failed for index {index}. Check transform function and processor behavior.")
-                # --- End Modified Check ---
-
+                logging.error(f"Transform for index {index} did not return the expected dict-like object. Got: {type(processed_data)}")
+                raise TypeError(f"Transform function failed for index {index}.")
         else:
-             # If no transform is provided
-             return {"image": image, "label": label}
-
+            # If no transform is provided, apply default channel selection based on config.
+            image_arr = np.array(image)
+            if image_arr.ndim == 3 and image_arr.shape[2] >= max(config.CHANNELS_TO_USE) + 1:
+                selected_arr = image_arr[..., config.CHANNELS_TO_USE]
+                image = Image.fromarray(selected_arr)
+            else:
+                image = image.convert("RGB")
+            return {"image": image, "label": label}
 
 def load_processed_data_paths():
     train_csv_path = config.PROCESSED_TRAIN_CSV_PATH
