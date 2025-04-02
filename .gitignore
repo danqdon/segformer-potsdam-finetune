@@ -1,7 +1,22 @@
-# Ignorar todo por defecto
-*
+# Ignore virtual environment
+segformer_venv/
 
-# Pero no ignores estos:
-!.gitignore
-!src/
-!src/**
+# Ignore model checkpoints and saved models
+segformer_best.pt
+segformer_checkpoint_epoch_*.pt
+segformer_potsdam_finetuned/
+
+# Ignore metrics and logs
+metrics/
+best_model/
+*.csv
+
+# Ignore evaluation outputs
+results/
+
+# Ignore data
+ISPRS_Potsdam/
+
+# Ignore cache
+__pycache__/
+*.pyc

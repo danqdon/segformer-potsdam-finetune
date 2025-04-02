@@ -9,23 +9,26 @@ from model import load_model, move_model
 from utils import remap_labels
 
 def visualize_segmentation(image, seg_map, palette):
-    """
-    Create an overlay visualization for the segmentation.
-    
-    Args:
-        image: a PIL.Image (RGB).
-        seg_map: a numpy array (H, W) with predicted class indices.
-        palette: list of RGB colors, one per class.
-    
-    Returns:
-        overlay: a numpy array representing the overlay image.
-    """
     h, w = seg_map.shape
     color_seg = np.zeros((h, w, 3), dtype=np.uint8)
     for label, color in enumerate(palette):
         color_seg[seg_map == label] = color
     overlay = (np.array(image).astype(np.float32) * 0.5 + color_seg.astype(np.float32) * 0.5).astype(np.uint8)
     return overlay
+
+def compute_class_distribution(seg_map, num_classes):
+    total_pixels = seg_map.size
+    percentages = {}
+    for cls in range(num_classes):
+        count = np.sum(seg_map == cls)
+        percentages[cls] = 100 * count / total_pixels
+    return percentages
+
+def print_class_distribution(distribution, title):
+    print(f"{title} (class %):")
+    for cls, perc in distribution.items():
+        print(f"  Class {cls}: {perc:.2f}%")
+    print("")
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -71,7 +74,10 @@ def main():
         image = Image.open(test_image_path).convert("RGB")
         label = Image.open(test_label_path).convert("L")
         label_np = np.array(label).astype(np.int32)
+        print("Valores únicos originales:", np.unique(label_np))
         gt_remapped = remap_labels(label_np, label_mapping)
+        print("Valores únicos remapeados:", np.unique(gt_remapped))
+
         
         inputs = processor(image, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -82,8 +88,18 @@ def main():
         upsampled_logits = torch.nn.functional.interpolate(
             logits, size=image.size[::-1], mode="bilinear", align_corners=False
         )
-        predicted = upsampled_logits.argmax(dim=1).squeeze(0).cpu().numpy()
         
+        predicted = upsampled_logits.argmax(dim=1).squeeze(0).cpu().numpy()
+        print("Valores únicos en la predicción:", np.unique(predicted))
+
+        # Print class distributions
+        gt_dist = compute_class_distribution(gt_remapped, num_labels)
+        pred_dist = compute_class_distribution(predicted, num_labels)
+        print(f"\nImage {i}: {os.path.basename(test_image_path)}")
+        print_class_distribution(gt_dist, "Ground Truth")
+        print_class_distribution(pred_dist, "Prediction")
+
+        # Visualizations
         pred_overlay = visualize_segmentation(image, predicted, palette)
         gt_overlay = visualize_segmentation(image, gt_remapped, palette)
         
