@@ -51,8 +51,18 @@ MODEL_SAVE_DIR.mkdir(parents=True, exist_ok=True)
 FINAL_MODEL_DIR_NAME = "segformer_potsdam_finetuned"
 BEST_MODEL_STATE_DICT_NAME = "segformer_best.pt"
 EPOCH_CHECKPOINT_FILENAME_TEMPLATE = "segformer_checkpoint_epoch_{epoch}.pt"
-FINAL_MODEL_PATH = MODEL_SAVE_DIR / FINAL_MODEL_DIR_NAME
-BEST_MODEL_STATE_DICT_PATH = MODEL_SAVE_DIR / BEST_MODEL_STATE_DICT_NAME
+
+# Default parameter for channel selection.
+# The default [0, 1, 2] corresponds to standard RGB behavior.
+CHANNELS_TO_USE = [0, 1, 2]
+NUM_INPUT_CHANNELS = len(CHANNELS_TO_USE)
+
+# Derived subfolder name based on the channel combination.
+CHANNEL_COMBINATION_NAME = "_".join(str(ch) for ch in CHANNELS_TO_USE)
+
+# Update final model paths to include the channel combination subfolder.
+FINAL_MODEL_PATH = MODEL_SAVE_DIR / CHANNEL_COMBINATION_NAME / FINAL_MODEL_DIR_NAME
+BEST_MODEL_STATE_DICT_PATH = MODEL_SAVE_DIR / CHANNEL_COMBINATION_NAME / BEST_MODEL_STATE_DICT_NAME
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NUM_EPOCHS = 50
@@ -83,6 +93,3 @@ VISUALIZATION_PALETTE = [
     [255, 0, 0],
 ]
 assert len(VISUALIZATION_PALETTE) == NUM_CLASSES, f"Palette length ({len(VISUALIZATION_PALETTE)}) must match NUM_CLASSES ({NUM_CLASSES})"
-
-CHANNELS_TO_USE = [0, 1, 3]
-NUM_INPUT_CHANNELS = len(CHANNELS_TO_USE)

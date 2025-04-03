@@ -7,10 +7,8 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 import logging
-import config
-
-# Import the mapping utility.
 from utils import map_pixel_values_to_class_indices
+import config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -32,7 +30,7 @@ class PotsdamSegmentationDataset(Dataset):
         label_path = data_row["label"]
 
         try:
-            # Load image without forcing conversion to RGB.
+            # Open the image without converting to RGB to preserve all channels.
             image = Image.open(image_path)
             label = Image.open(label_path).convert("L")
         except FileNotFoundError as e:
@@ -44,28 +42,19 @@ class PotsdamSegmentationDataset(Dataset):
 
         if self.transform:
             processed_data = self.transform(image, label)
-            # Check if the returned object is dict-like and contains the expected keys.
             if isinstance(processed_data, collections.abc.Mapping) and \
                "pixel_values" in processed_data and \
                "labels" in processed_data:
-                 if isinstance(processed_data["pixel_values"], torch.Tensor) and \
-                    isinstance(processed_data["labels"], torch.Tensor):
-                     return processed_data
-                 else:
-                     logging.error(f"Transform for index {index} returned correct keys but wrong value types: "
-                                   f"pixel_values={type(processed_data.get('pixel_values'))}, labels={type(processed_data.get('labels'))}")
-                     raise TypeError(f"Transform function failed for index {index}: Incorrect value types.")
+                if isinstance(processed_data["pixel_values"], torch.Tensor) and \
+                   isinstance(processed_data["labels"], torch.Tensor):
+                    return processed_data
+                else:
+                    logging.error(f"Transform function for index {index} returned correct keys but wrong value types: pixel_values={type(processed_data.get('pixel_values'))}, labels={type(processed_data.get('labels'))}")
+                    raise TypeError(f"Transform function failed for index {index}: Incorrect value types.")
             else:
-                logging.error(f"Transform for index {index} did not return the expected dict-like object. Got: {type(processed_data)}")
-                raise TypeError(f"Transform function failed for index {index}.")
+                logging.error(f"Transform function failed for index {index}. Expected dict-like with 'pixel_values' and 'labels', got: {type(processed_data)}")
+                raise TypeError(f"Transform function failed for index {index}. Check transform function and processor behavior.")
         else:
-            # If no transform is provided, apply default channel selection based on config.
-            image_arr = np.array(image)
-            if image_arr.ndim == 3 and image_arr.shape[2] >= max(config.CHANNELS_TO_USE) + 1:
-                selected_arr = image_arr[..., config.CHANNELS_TO_USE]
-                image = Image.fromarray(selected_arr)
-            else:
-                image = image.convert("RGB")
             return {"image": image, "label": label}
 
 def load_processed_data_paths():
@@ -73,8 +62,7 @@ def load_processed_data_paths():
     val_csv_path = config.PROCESSED_VAL_CSV_PATH
 
     if not train_csv_path.exists() or not val_csv_path.exists():
-        message = (f"Processed CSV files not found at {train_csv_path} or {val_csv_path}. "
-                   "Please run src/preprocess.py first.")
+        message = (f"Processed CSV files not found at {train_csv_path} or {val_csv_path}. Please run src/preprocess.py first.")
         logging.error(message)
         raise FileNotFoundError(message)
 
