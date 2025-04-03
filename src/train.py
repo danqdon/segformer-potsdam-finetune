@@ -81,8 +81,15 @@ def run_training(arguments):
     config.FINAL_MODEL_PATH = config.MODEL_SAVE_DIR / config.CHANNEL_COMBINATION_NAME / config.FINAL_MODEL_DIR_NAME
     config.BEST_MODEL_STATE_DICT_PATH = config.MODEL_SAVE_DIR / config.CHANNEL_COMBINATION_NAME / config.BEST_MODEL_STATE_DICT_NAME
 
+    # *** NEW: Update metrics folder paths based on the channel combination ***
+    config.METRICS_SUBDIR = config.METRICS_DIR / config.CHANNEL_COMBINATION_NAME
+    config.METRICS_SUBDIR.mkdir(parents=True, exist_ok=True)
+    config.BEST_METRICS_CSV_PATH = config.METRICS_SUBDIR / "best_metrics.csv"
+    config.ALL_EPOCH_METRICS_CSV_PATH = config.METRICS_SUBDIR / "all_epoch_metrics.csv"
+
     logging.info(f"Using channel combination: {config.CHANNELS_TO_USE}")
     logging.info(f"Models will be saved under subfolder: {config.CHANNEL_COMBINATION_NAME}")
+    logging.info(f"Metrics will be saved under subfolder: {config.CHANNEL_COMBINATION_NAME}")
 
     logging.info("Starting training process...")
     logging.info(f"Using device: {config.DEVICE}")

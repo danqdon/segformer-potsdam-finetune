@@ -66,7 +66,7 @@ BEST_MODEL_STATE_DICT_PATH = MODEL_SAVE_DIR / CHANNEL_COMBINATION_NAME / BEST_MO
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NUM_EPOCHS = 50
-TRAIN_BATCH_SIZE = 16
+TRAIN_BATCH_SIZE = 20
 LEARNING_RATE = 6e-5
 WEIGHT_DECAY = 0.01
 OPTIMIZER_TYPE = "AdamW"
@@ -79,8 +79,11 @@ EVALUATION_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 NUM_EVALUATION_SAMPLES_TO_VISUALIZE = 5
 METRICS_DIR = BASE_PROJECT_DIR / "metrics"
 METRICS_DIR.mkdir(parents=True, exist_ok=True)
-BEST_METRICS_CSV_PATH = METRICS_DIR / "best_metrics.csv"
-ALL_EPOCH_METRICS_CSV_PATH = METRICS_DIR / "all_epoch_metrics.csv"
+# Create a metrics subfolder based on the channel combination.
+METRICS_SUBDIR = METRICS_DIR / CHANNEL_COMBINATION_NAME
+METRICS_SUBDIR.mkdir(parents=True, exist_ok=True)
+BEST_METRICS_CSV_PATH = METRICS_SUBDIR / "best_metrics.csv"
+ALL_EPOCH_METRICS_CSV_PATH = METRICS_SUBDIR / "all_epoch_metrics.csv"
 
 GLOBAL_PIXEL_COUNTS_JSON_PATH = SRC_DIR / "global_counts.json"
 
