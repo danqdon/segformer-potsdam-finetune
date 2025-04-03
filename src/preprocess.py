@@ -10,22 +10,34 @@ import config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def process_image_preserve_channels(input_path, output_path):
-    try: #TODO comprobar en el preprocess si estamos perdiendo imagenes por sobreescrbirlas porque hay varias con el mismo nombres de subtile
+def process_image_preserve_channels(input_path, output_dir):
+    try:
         # Open the original image and save it as-is to preserve all channels.
         img = Image.open(input_path)
-        # Optionally, you can specify a format (e.g., TIFF or PNG) that supports multiple channels.
-        img.save(output_path)  
+        
+        # Prepend the name of the parent folder to the original filename
+        parent_1 = input_path.parent.name             # 'images'
+        parent_2 = input_path.parent.parent.name      # 'postdam_ir_512_2_10'
+        prefix = f"{parent_2}_{parent_1}"
+        new_filename = f"{prefix}_{input_path.name}"
+        
+        output_path = output_dir / new_filename
+        # Save using a format that supports multiple channels (e.g., TIFF)
+        img.save(output_path)
         return str(output_path)
     except Exception as e:
         logging.error(f"Failed to process image {input_path}: {e}")
         return None
 
-def convert_label_to_grayscale_and_save(input_path, output_path):
+def convert_label_to_grayscale_and_save(input_path, output_dir):
     try:
         mask = Image.open(input_path)
         if mask.mode != "L":
             mask = mask.convert("L")
+        # Similarly, prefix the parent's name to avoid overwriting.
+        prefix = input_path.parent.name
+        new_filename = f"{prefix}_{input_path.name}"
+        output_path = output_dir / new_filename
         mask.save(output_path)
         return str(output_path)
     except Exception as e:
@@ -53,16 +65,15 @@ def run_dataset_preprocessing(image_csv_path, label_csv_path, image_col_name, la
     logging.info(f"Processing {len(images_df)} images...")
     for _, row in tqdm(images_df.iterrows(), total=len(images_df), desc="Processing Images"):
         in_path = row['absolute_path']
-        out_path = output_img_dir / in_path.name
-        processed_path = process_image_preserve_channels(in_path, out_path)
+        # Use the parent's folder name to generate a unique output filename
+        processed_path = process_image_preserve_channels(in_path, output_img_dir)
         processed_image_paths.append(processed_path if processed_path else None)
 
     processed_label_paths = []
     logging.info(f"Processing {len(labels_df)} labels...")
     for _, row in tqdm(labels_df.iterrows(), total=len(labels_df), desc="Processing Labels"):
         in_path = row['absolute_path']
-        out_path = output_lbl_dir / in_path.name
-        processed_path = convert_label_to_grayscale_and_save(in_path, out_path)
+        processed_path = convert_label_to_grayscale_and_save(in_path, output_lbl_dir)
         processed_label_paths.append(processed_path if processed_path else None)
 
     processed_paths_df = pd.DataFrame({
